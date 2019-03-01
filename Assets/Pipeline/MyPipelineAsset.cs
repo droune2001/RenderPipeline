@@ -71,6 +71,7 @@ public class MyPipeline : RenderPipeline
             camera, // used for sorting and layers
             new ShaderPassName("SRPDefaultUnlit") // used, obviously, as the shader to use to draw.
         );
+        drawSettings.flags = DrawRendererFlags.EnableDynamicBatching; // enable batching of small objects.
         drawSettings.sorting.flags = SortFlags.CommonOpaque; // front-to-back sort for opaque objects
         var filterSettings = new FilterRenderersSettings(true) // true = include everything
         {
