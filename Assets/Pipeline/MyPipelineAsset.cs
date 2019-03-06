@@ -9,6 +9,21 @@ using Conditional = System.Diagnostics.ConditionalAttribute;
 // derive the base render pipeline to get already filled abstract methods
 public class MyPipeline : RenderPipeline
 {
+    DrawRendererFlags drawFlags;
+
+    public MyPipeline(bool dynamicBatching, bool instancing)
+    {
+        if (dynamicBatching)
+        {
+            drawFlags = DrawRendererFlags.EnableDynamicBatching;
+        }
+
+        if (instancing)
+        {
+            drawFlags |= DrawRendererFlags.EnableInstancing;
+        }
+    }
+
     // Main function of a render pipeline.
     public override void Render(ScriptableRenderContext renderContext, Camera[] cameras)
     {
@@ -67,11 +82,12 @@ public class MyPipeline : RenderPipeline
         //
         // DRAW opaque RENDERERS
         //
+
         var drawSettings = new DrawRendererSettings(
             camera, // used for sorting and layers
             new ShaderPassName("SRPDefaultUnlit") // used, obviously, as the shader to use to draw.
         );
-        drawSettings.flags = DrawRendererFlags.EnableDynamicBatching; // enable batching of small objects.
+        drawSettings.flags = drawFlags; // enable [optional] batching of small objects.
         drawSettings.sorting.flags = SortFlags.CommonOpaque; // front-to-back sort for opaque objects
         var filterSettings = new FilterRenderersSettings(true) // true = include everything
         {
@@ -142,8 +158,11 @@ public class MyPipeline : RenderPipeline
 [CreateAssetMenu(menuName = "Rendering/My Pipeline")]
 public class MyPipelineAsset : RenderPipelineAsset
 {
+    [SerializeField] bool dynamicBatching = false;
+    [SerializeField] bool instancing = true;
+
     protected override IRenderPipeline InternalCreatePipeline()
     {
-        return new MyPipeline();
+        return new MyPipeline(dynamicBatching, instancing);
     }
 }
