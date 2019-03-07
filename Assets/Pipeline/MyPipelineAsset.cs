@@ -9,10 +9,28 @@ using Conditional = System.Diagnostics.ConditionalAttribute;
 // derive the base render pipeline to get already filled abstract methods
 public class MyPipeline : RenderPipeline
 {
+    const int maxVisibleLights = 16;
+
+    static readonly int visibleLightColorsId = Shader.PropertyToID("_VisibleLightColors"); // constant per session
+    static readonly int visibleLightDirectionsOrPositionsId = Shader.PropertyToID("_VisibleLightDirectionsOrPositions");
+    static readonly int visibleLightAttenuationsId = Shader.PropertyToID("_VisibleLightAttenuations");
+    static readonly int visibleLightSpotDirectionsId = Shader.PropertyToID("_VisibleLightSpotDirections");
+    static readonly int lightIndicesOffsetAndCountId = Shader.PropertyToID("unity_LightIndicesOffsetAndCount");
+
+    Vector4[] visibleLightColors = new Vector4[maxVisibleLights];
+    Vector4[] visibleLightDirectionsOrPositions = new Vector4[maxVisibleLights];
+    Vector4[] visibleLightAttenuations = new Vector4[maxVisibleLights];
+    Vector4[] visibleLightSpotDirections = new Vector4[maxVisibleLights];
+
     DrawRendererFlags drawFlags;
 
+    //
+    // non default constructor
+    //
     public MyPipeline(bool dynamicBatching, bool instancing)
     {
+        GraphicsSettings.lightsUseLinearIntensity = true; // even if we are in linear, intensities are gamma by default.
+
         if (dynamicBatching)
         {
             drawFlags = DrawRendererFlags.EnableDynamicBatching;
@@ -75,6 +93,22 @@ public class MyPipeline : RenderPipeline
             (cf & CameraClearFlags.Depth) != 0, // use the camera flags DEPTH
             (cf & CameraClearFlags.Color) != 0, // use the camera flags COLOR
             Color.clear);
+
+        if (cull.visibleLights.Count > 0)
+        {
+            ConfigureLights();
+        }
+        else
+        {
+            cameraBuffer.SetGlobalVector(lightIndicesOffsetAndCountId, Vector4.zero);
+        }
+
+        // send the light buffer(s) to the GPU
+        cameraBuffer.SetGlobalVectorArray(visibleLightColorsId, visibleLightColors);
+        cameraBuffer.SetGlobalVectorArray(visibleLightDirectionsOrPositionsId, visibleLightDirectionsOrPositions);
+        cameraBuffer.SetGlobalVectorArray(visibleLightAttenuationsId, visibleLightAttenuations);
+        cameraBuffer.SetGlobalVectorArray(visibleLightSpotDirectionsId, visibleLightSpotDirections);
+
         //cameraBuffer.EndSample("Render Camera");
         ctx.ExecuteCommandBuffer(cameraBuffer); // pushes this buffer commands to the context internal buffer
         cameraBuffer.Clear(); // Release(); // Clear instead of Release since we reuse the variable.
@@ -86,8 +120,13 @@ public class MyPipeline : RenderPipeline
         var drawSettings = new DrawRendererSettings(
             camera, // used for sorting and layers
             new ShaderPassName("SRPDefaultUnlit") // used, obviously, as the shader to use to draw.
-        );
-        drawSettings.flags = drawFlags; // enable [optional] batching of small objects.
+        ){
+            flags = drawFlags, // enable [optional] batching of small objects, and instancing.
+        };
+        if (cull.visibleLights.Count > 0) // or else Unity crashes...
+        {
+            drawSettings.rendererConfiguration = RendererConfiguration.PerObjectLightIndices8; // Forward+, 8 light indices per object
+        }
         drawSettings.sorting.flags = SortFlags.CommonOpaque; // front-to-back sort for opaque objects
         var filterSettings = new FilterRenderersSettings(true) // true = include everything
         {
@@ -117,6 +156,65 @@ public class MyPipeline : RenderPipeline
         //cameraBuffer.Clear(); // Release(); // Clear instead of Release since we reuse the variable.
 
         ctx.Submit(); // commands are buffered in the context. flush.
+    }
+
+    private void ConfigureLights()
+    {
+        for (int i = 0; i < cull.visibleLights.Count; i++)
+        {
+            // stop storing lights when there are more visible lights than we can handle.
+            if (i == maxVisibleLights)
+                break;
+
+            VisibleLight light = cull.visibleLights[i];
+            visibleLightColors[i] = light.finalColor; // color * intensity, in the correct color space.
+
+            Vector4 attenuation = Vector4.zero;
+            attenuation.w = 1f; // to avoid spotlight attenuation from affecting other light types.
+
+            if (light.lightType == LightType.Directional)
+            {
+                Vector4 v = light.localToWorld.GetColumn(2); // transform of the local Z axis to world.
+                v.x = -v.x;
+                v.y = -v.y;
+                v.z = -v.z;
+                visibleLightDirectionsOrPositions[i] = v;
+            }
+            else // point and spot
+            {
+                visibleLightDirectionsOrPositions[i] = light.localToWorld.GetColumn(3); // position in world
+                attenuation.x = 1.0f / Mathf.Max(light.range * light.range, 0.00001f);
+
+                if (light.lightType == LightType.Spot)
+                {
+                    Vector4 v = light.localToWorld.GetColumn(2); // transform of the local Z axis to world.
+                    v.x = -v.x;
+                    v.y = -v.y;
+                    v.z = -v.z;
+                    visibleLightSpotDirections[i] = v;
+
+                    float outerRad = Mathf.Deg2Rad * 0.5f * light.spotAngle;
+                    float outerCos = Mathf.Cos(outerRad);
+                    float outerTan = Mathf.Tan(outerRad);
+                    float innerCos = Mathf.Cos(Mathf.Atan(((46f / 64f) * outerTan)));
+                    float angleRange = Mathf.Max(innerCos - outerCos, 0.001f);
+                    attenuation.z = 1f / angleRange;
+                    attenuation.w = -outerCos * attenuation.z;
+                }
+            }
+
+            visibleLightAttenuations[i] = attenuation;
+        }
+
+        if (cull.visibleLights.Count > maxVisibleLights)
+        {
+            int[] lightIndices = cull.GetLightIndexMap();
+            for (int i = maxVisibleLights; i < cull.visibleLights.Count; i++)
+            {
+                lightIndices[i] = -1;
+            }
+            cull.SetLightIndexMap(lightIndices);
+        }
     }
 
     [Conditional("DEVELOPMENT_BUILD"), Conditional("UNITY_EDITOR")]
